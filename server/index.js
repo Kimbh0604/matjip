@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
-import nodemailer from 'nodemailer';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,25 +21,8 @@ const naverMapClientId = process.env.NAVER_MAP_CLIENT_ID || process.env.VITE_NAV
 const naverMapClientSecret = process.env.NAVER_MAP_CLIENT_SECRET;
 const reportToEmail = process.env.REPORT_TO_EMAIL;
 const reportSaveDir = process.env.REPORT_SAVE_DIR || 'reports';
-
-function createMailTransporter() {
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    return null;
-  }
-
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS
-    }
-  });
-}
+const resendApiKey = process.env.RESEND_API_KEY;
+const reportFromEmail = process.env.REPORT_FROM_EMAIL || 'Matjip <onboarding@resend.dev>';
 
 function escapeHtml(value) {
   return String(value)
@@ -75,6 +57,46 @@ function createReportText(report) {
     '맛있었던 이유 / 추가 정보',
     report.reason || '미입력'
   ].join('\n');
+}
+
+async function sendReportEmail({ report, reportText }) {
+  if (!resendApiKey) {
+    throw new Error('RESEND_API_KEY가 설정되지 않았습니다.');
+  }
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${resendApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: reportFromEmail,
+      to: [reportToEmail],
+      reply_to: report.reporterEmail || undefined,
+      subject: `[Matjip] 맛집 제보: ${report.restaurantName}`,
+      text: reportText,
+      html: `
+        <h2>맛집 제보</h2>
+        <p><strong>접수 시간:</strong> ${escapeHtml(report.createdAt)}</p>
+        <p><strong>식당 이름:</strong> ${escapeHtml(report.restaurantName)}</p>
+        <p><strong>위치:</strong> ${escapeHtml(report.location)}</p>
+        <p><strong>추천 메뉴:</strong> ${escapeHtml(report.recommendedMenu)}</p>
+        <p><strong>제보자 이름:</strong> ${escapeHtml(report.reporterName || '미입력')}</p>
+        <p><strong>제보자 이메일:</strong> ${escapeHtml(report.reporterEmail || '미입력')}</p>
+        <h3>맛있었던 이유 / 추가 정보</h3>
+        <p>${escapeHtml(report.reason || '미입력').replace(/\n/g, '<br />')}</p>
+      `
+    })
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.message || data.error || `Resend email failed with status ${response.status}`);
+  }
+
+  return data;
 }
 
 const fallbackLocations = new Map(
@@ -193,10 +215,8 @@ app.post('/api/reports', async (req, res) => {
     return;
   }
 
-  const transporter = createMailTransporter();
-
-  if (!transporter) {
-    res.status(500).json({ message: 'SMTP 설정이 필요합니다.' });
+  if (!resendApiKey) {
+    res.status(500).json({ message: 'RESEND_API_KEY? ???? ?????.' });
     return;
   }
 
@@ -217,32 +237,7 @@ app.post('/api/reports', async (req, res) => {
     await mkdir(reportSaveDir, { recursive: true });
     await writeFile(reportFilePath, reportText, 'utf8');
 
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: reportToEmail,
-      replyTo: reporterEmail || undefined,
-      subject: `[Matjip] 맛집 제보: ${restaurantName}`,
-      text: `${reportText}\n\n첨부 파일에도 같은 제보 내용이 저장되어 있습니다.`,
-      html: `
-        <h2>맛집 제보</h2>
-        <p><strong>접수 시간:</strong> ${escapeHtml(createdAt)}</p>
-        <p><strong>식당 이름:</strong> ${escapeHtml(restaurantName)}</p>
-        <p><strong>위치:</strong> ${escapeHtml(location)}</p>
-        <p><strong>추천 메뉴:</strong> ${escapeHtml(recommendedMenu)}</p>
-        <p><strong>제보자 이름:</strong> ${escapeHtml(reporterName || '미입력')}</p>
-        <p><strong>제보자 이메일:</strong> ${escapeHtml(reporterEmail || '미입력')}</p>
-        <h3>맛있었던 이유 / 추가 정보</h3>
-        <p>${escapeHtml(reason || '미입력').replace(/\n/g, '<br />')}</p>
-        <p>같은 내용의 제보 파일을 첨부했습니다.</p>
-      `,
-      attachments: [
-        {
-          filename: reportFileName,
-          path: reportFilePath,
-          contentType: 'text/plain; charset=utf-8'
-        }
-      ]
-    });
+    await sendReportEmail({ report, reportText });
 
     res.status(201).json({ ok: true, file: reportFilePath });
   } catch (error) {
