@@ -312,6 +312,10 @@ app.get('/api/matjip/nearby', async (req, res) => {
   const lat = Number(req.query.lat);
   const lng = Number(req.query.lng);
   const radiusKm = Number(req.query.radiusKm ?? 1);
+  const excludedFoodCategories = String(req.query.excludeFoodCategories ?? '')
+    .split(',')
+    .map((term) => term.trim())
+    .filter(Boolean);
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     res.status(400).json({ message: 'lat, lng query parameters are required.' });
@@ -358,6 +362,14 @@ app.get('/api/matjip/nearby', async (req, res) => {
         where latitude is not null
           and longitude is not null
           and (
+            cardinality($4::text[]) = 0
+            or not exists (
+              select 1
+              from unnest($4::text[]) as excluded(term)
+              where food_category ilike '%' || excluded.term || '%'
+            )
+          )
+          and (
             6371 * acos(
               greatest(
                 -1,
@@ -372,10 +384,10 @@ app.get('/api/matjip/nearby', async (req, res) => {
           ) <= $3
         order by distance_km asc, name asc
       `,
-      [lat, lng, radiusKm]
+      [lat, lng, radiusKm, excludedFoodCategories]
     );
 
-    res.json({ radiusKm, restaurants: result.rows });
+    res.json({ radiusKm, excludedFoodCategories, restaurants: result.rows });
   } catch (error) {
     console.error('GET /api/matjip/nearby failed:', error);
     res.status(500).json({ message: error.message });

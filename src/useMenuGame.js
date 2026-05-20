@@ -47,21 +47,7 @@ export default function useMenuGame() {
     .split(',')
     .map((term) => term.trim())
     .filter(Boolean);
-  const filteredRestaurants = restaurants
-    .filter((restaurant) => {
-      const searchableText = [
-        restaurant.name,
-        restaurant.food_category,
-        restaurant.naver_category,
-        restaurant.memo,
-        restaurant.address
-      ]
-        .filter(Boolean)
-        .join(' ');
-
-      return !excludedTerms.some((term) => searchableText.includes(term));
-    })
-    .sort((a, b) => Number(a.distance_km) - Number(b.distance_km));
+  const filteredRestaurants = [...restaurants].sort((a, b) => Number(a.distance_km) - Number(b.distance_km));
   const candidates = filteredRestaurants;
 
   async function loadCandidates() {
@@ -79,6 +65,11 @@ export default function useMenuGame() {
         lng: String(current.lng),
         radiusKm: String(SEARCH_RADIUS_KM)
       });
+
+      if (excludedTerms.length > 0) {
+        params.set('excludeFoodCategories', excludedTerms.join(','));
+      }
+
       const response = await fetch(`/api/matjip/nearby?${params.toString()}`);
 
       if (!response.ok) {
