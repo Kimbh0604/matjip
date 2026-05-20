@@ -32,6 +32,9 @@ function createMailTransporter() {
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
     secure: process.env.SMTP_SECURE === 'true',
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS
@@ -144,11 +147,25 @@ async function geocodeLocation(query) {
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+
+  res.on('finish', () => {
+    if (req.path.startsWith('/api') || res.statusCode >= 400) {
+      const durationMs = Date.now() - startedAt;
+      console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${durationMs}ms`);
+    }
+  });
+
+  next();
+});
+
 app.get('/api/health', async (_req, res) => {
   try {
     await pool.query('select 1');
     res.json({ ok: true, database: 'connected' });
   } catch (error) {
+    console.error('GET /api/health failed:', error);
     res.status(503).json({
       ok: false,
       database: 'unavailable',
@@ -229,6 +246,7 @@ app.post('/api/reports', async (req, res) => {
 
     res.status(201).json({ ok: true, file: reportFilePath });
   } catch (error) {
+    console.error('POST /api/reports failed:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -290,6 +308,7 @@ app.get('/api/locations/search', async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('GET /api/locations/search failed:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -363,6 +382,7 @@ app.get('/api/matjip/nearby', async (req, res) => {
 
     res.json({ radiusKm, restaurants: result.rows });
   } catch (error) {
+    console.error('GET /api/matjip/nearby failed:', error);
     res.status(500).json({ message: error.message });
   }
 });
